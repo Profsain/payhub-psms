@@ -1,0 +1,2 @@
+Features to consider
+1. When an institution is onboarded create a unique url with the institution name. staff can follow the url and login
