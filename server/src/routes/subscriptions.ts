@@ -1,8 +1,11 @@
 import express from 'express';
 import { z } from 'zod';
-import { prisma } from '../index';
-import { authenticate, requireInstitution, AuthRequest } from '../middleware/auth';
-import { SubscriptionStatus } from '@prisma/client';
+import { Subscription, Payment, SubscriptionStatus } from "../models";
+import {
+	authenticate,
+	requireInstitution,
+	AuthRequest,
+} from "../middleware/auth";
 
 const router = express.Router();
 
@@ -20,29 +23,39 @@ const createSubscriptionSchema = z.object({
 // @access  Private (Institution Admin)
 router.get('/', authenticate, requireInstitution, async (req: AuthRequest, res) => {
   try {
-    const subscriptions = await prisma.subscription.findMany({
-      where: {
-        institutionId: req.user!.institutionId
-      },
-      orderBy: { createdAt: 'desc' },
-      include: {
-        payments: {
-          orderBy: { createdAt: 'desc' },
-          take: 5
-        }
-      }
-    });
+    const subscriptions = await Subscription.find({
+		institution: req.user!.institution,
+	})
+		.sort({ createdAt: -1 })
+		.lean();
 
-    res.json({
-      success: true,
-      data: subscriptions
-    });
+	// Get payments for each subscription
+	const subscriptionsWithPayments = await Promise.all(
+		subscriptions.map(async (subscription) => {
+			const payments = await Payment.find({
+				subscription: subscription._id,
+			})
+				.sort({ createdAt: -1 })
+				.limit(5)
+				.lean();
+
+			return {
+				...subscription,
+				payments,
+			};
+		}),
+	);
+
+    return res.json({
+		success: true,
+		data: subscriptionsWithPayments,
+	});
   } catch (error) {
     console.error('Get subscriptions error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
+    return res.status(500).json({
+		success: false,
+		error: "Server error",
+	});
   }
 });
 
@@ -54,12 +67,10 @@ router.post('/', authenticate, requireInstitution, async (req: AuthRequest, res)
     const subscriptionData = createSubscriptionSchema.parse(req.body);
 
     // Check if institution already has an active subscription
-    const activeSubscription = await prisma.subscription.findFirst({
-      where: {
-        institutionId: req.user!.institutionId,
-        status: SubscriptionStatus.ACTIVE
-      }
-    });
+    const activeSubscription = await Subscription.findOne({
+		institution: req.user!.institution,
+		status: SubscriptionStatus.ACTIVE,
+	});
 
     if (activeSubscription) {
       return res.status(400).json({
@@ -68,123 +79,244 @@ router.post('/', authenticate, requireInstitution, async (req: AuthRequest, res)
       });
     }
 
-    const subscription = await prisma.subscription.create({
-      data: {
-        ...subscriptionData,
-        institutionId: req.user!.institutionId,
-        status: SubscriptionStatus.PENDING,
-        startDate: new Date()
-      }
-    });
+    const subscription = new Subscription({
+		...subscriptionData,
+		institution: req.user!.institution,
+		status: SubscriptionStatus.PENDING,
+		startDate: new Date(),
+	});
 
-    res.status(201).json({
-      success: true,
-      data: subscription
-    });
+    await subscription.save();
+
+	return res.status(201).json({
+		success: true,
+		data: subscription,
+	});
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({
-        success: false,
-        error: error.errors[0].message
-      });
+			success: false,
+			error: error.errors[0]?.message || "Validation error",
+		});
     }
     
     console.error('Create subscription error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
+    return res.status(500).json({
+		success: false,
+		error: "Server error",
+	});
   }
 });
 
 // @route   GET /api/subscriptions/:id
 // @desc    Get subscription by ID
 // @access  Private (Institution Admin)
-router.get('/:id', authenticate, requireInstitution, async (req: AuthRequest, res) => {
-  try {
-    const { id } = req.params;
+router.get(
+	"/:id",
+	authenticate,
+	requireInstitution,
+	async (req: AuthRequest, res) => {
+		try {
+			const { id } = req.params;
 
-    const subscription = await prisma.subscription.findFirst({
-      where: {
-        id,
-        institutionId: req.user!.institutionId
-      },
-      include: {
-        payments: {
-          orderBy: { createdAt: 'desc' }
-        }
-      }
-    });
+			const subscription = await Subscription.findOne({
+				_id: id,
+				institution: req.user!.institution,
+			}).lean();
 
-    if (!subscription) {
-      return res.status(404).json({
-        success: false,
-        error: 'Subscription not found'
-      });
-    }
+			if (!subscription) {
+				return res.status(404).json({
+					success: false,
+					error: "Subscription not found",
+				});
+			}
 
-    res.json({
-      success: true,
-      data: subscription
-    });
-  } catch (error) {
-    console.error('Get subscription error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
-  }
-});
+			// Get payments for this subscription
+			const payments = await Payment.find({
+				subscription: id,
+			})
+				.sort({ createdAt: -1 })
+				.lean();
 
-// @route   PUT /api/subscriptions/:id/cancel
+			const subscriptionWithPayments = {
+				...subscription,
+				payments,
+			};
+
+			return res.json({
+				success: true,
+				data: subscriptionWithPayments,
+			});
+		} catch (error) {
+			console.error("Get subscription error:", error);
+			return res.status(500).json({
+				success: false,
+				error: "Server error",
+			});
+		}
+	},
+);
+
+// @route   PUT /api/subscriptions/:id
+// @desc    Update subscription
+// @access  Private (Institution Admin)
+router.put(
+	"/:id",
+	authenticate,
+	requireInstitution,
+	async (req: AuthRequest, res) => {
+		try {
+			const { id } = req.params;
+			const updateData = createSubscriptionSchema
+				.partial()
+				.parse(req.body);
+
+			// Check if subscription exists and belongs to institution
+			const existingSubscription = await Subscription.findOne({
+				_id: id,
+				institution: req.user!.institution,
+			});
+
+			if (!existingSubscription) {
+				return res.status(404).json({
+					success: false,
+					error: "Subscription not found",
+				});
+			}
+
+			const subscription = await Subscription.findByIdAndUpdate(
+				id,
+				updateData,
+				{ new: true, runValidators: true },
+			).lean();
+
+			return res.json({
+				success: true,
+				data: subscription,
+			});
+		} catch (error) {
+			if (error instanceof z.ZodError) {
+				return res.status(400).json({
+					success: false,
+					error: error.errors[0]?.message || "Validation error",
+				});
+			}
+
+			console.error("Update subscription error:", error);
+			return res.status(500).json({
+				success: false,
+				error: "Server error",
+			});
+		}
+	},
+);
+
+// @route   DELETE /api/subscriptions/:id
 // @desc    Cancel subscription
 // @access  Private (Institution Admin)
-router.put('/:id/cancel', authenticate, requireInstitution, async (req: AuthRequest, res) => {
-  try {
-    const { id } = req.params;
+router.delete(
+	"/:id",
+	authenticate,
+	requireInstitution,
+	async (req: AuthRequest, res) => {
+		try {
+			const { id } = req.params;
 
-    const subscription = await prisma.subscription.findFirst({
-      where: {
-        id,
-        institutionId: req.user!.institutionId
-      }
-    });
+			// Check if subscription exists and belongs to institution
+			const subscription = await Subscription.findOne({
+				_id: id,
+				institution: req.user!.institution,
+			});
 
-    if (!subscription) {
-      return res.status(404).json({
-        success: false,
-        error: 'Subscription not found'
-      });
-    }
+			if (!subscription) {
+				return res.status(404).json({
+					success: false,
+					error: "Subscription not found",
+				});
+			}
 
-    if (subscription.status !== SubscriptionStatus.ACTIVE) {
-      return res.status(400).json({
-        success: false,
-        error: 'Only active subscriptions can be cancelled'
-      });
-    }
+			// Cancel subscription by setting status to CANCELLED
+			subscription.status = SubscriptionStatus.CANCELLED;
+			subscription.endDate = new Date();
+			await subscription.save();
 
-    const updatedSubscription = await prisma.subscription.update({
-      where: { id },
-      data: {
-        status: SubscriptionStatus.CANCELLED,
-        endDate: new Date()
-      }
-    });
+			return res.json({
+				success: true,
+				message: "Subscription cancelled successfully",
+			});
+		} catch (error) {
+			console.error("Cancel subscription error:", error);
+			return res.status(500).json({
+				success: false,
+				error: "Server error",
+			});
+		}
+	},
+);
 
-    res.json({
-      success: true,
-      data: updatedSubscription,
-      message: 'Subscription cancelled successfully'
-    });
-  } catch (error) {
-    console.error('Cancel subscription error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
-  }
-});
+// @route   POST /api/subscriptions/:id/activate
+// @desc    Activate subscription
+// @access  Private (Institution Admin)
+router.post(
+	"/:id/activate",
+	authenticate,
+	requireInstitution,
+	async (req: AuthRequest, res) => {
+		try {
+			const { id } = req.params;
+
+			// Check if subscription exists and belongs to institution
+			const subscription = await Subscription.findOne({
+				_id: id,
+				institution: req.user!.institution,
+			});
+
+			if (!subscription) {
+				return res.status(404).json({
+					success: false,
+					error: "Subscription not found",
+				});
+			}
+
+			// Check if institution already has an active subscription
+			if (subscription.status === SubscriptionStatus.ACTIVE) {
+				return res.status(400).json({
+					success: false,
+					error: "Subscription is already active",
+				});
+			}
+
+			// Deactivate any other active subscriptions
+			await Subscription.updateMany(
+				{
+					institution: req.user!.institution,
+					status: SubscriptionStatus.ACTIVE,
+				},
+				{
+					status: SubscriptionStatus.SUSPENDED,
+					endDate: new Date(),
+				},
+			);
+
+			// Activate this subscription
+			subscription.status = SubscriptionStatus.ACTIVE;
+			subscription.startDate = new Date();
+			subscription.endDate = undefined;
+			await subscription.save();
+
+			return res.json({
+				success: true,
+				data: subscription,
+			});
+		} catch (error) {
+			console.error("Activate subscription error:", error);
+			return res.status(500).json({
+				success: false,
+				error: "Server error",
+			});
+		}
+	},
+);
 
 // @route   GET /api/subscriptions/plans
 // @desc    Get available subscription plans

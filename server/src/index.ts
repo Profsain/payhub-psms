@@ -3,8 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
-import dotenv from 'dotenv';
-import { PrismaClient } from '@prisma/client';
+import dotenv from "dotenv";
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -19,14 +18,14 @@ import { errorHandler } from './middleware/errorHandler';
 import { notFound } from './middleware/notFound';
 import { validateEnv } from './utils/validateEnv';
 
+// Import database configuration
+import { connectDatabase, disconnectDatabase, gracefulShutdown } from './config/database';
+
 // Load environment variables
 dotenv.config();
 
 // Validate environment variables
 validateEnv();
-
-// Initialize Prisma
-export const prisma = new PrismaClient();
 
 // Create Express app
 const app = express();
@@ -97,34 +96,20 @@ app.use(notFound);
 app.use(errorHandler);
 
 // Graceful shutdown
-const gracefulShutdown = async () => {
-  console.log('Received shutdown signal, closing server...');
-  
-  try {
-    await prisma.$disconnect();
-    console.log('Database connection closed.');
-    process.exit(0);
-  } catch (error) {
-    console.error('Error during shutdown:', error);
-    process.exit(1);
-  }
-};
-
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
 // Start server
 const startServer = async () => {
   try {
-    // Test database connection
-    await prisma.$connect();
-    console.log('✅ Database connected successfully');
+		// Connect to MongoDB
+		await connectDatabase();
 
-    app.listen(PORT, () => {
-      console.log(`🚀 PayHub Server running on port ${PORT}`);
-      console.log(`📊 Environment: ${process.env.NODE_ENV}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-    });
+		app.listen(PORT, () => {
+			console.log(`🚀 PayHub Server running on port ${PORT}`);
+			console.log(`📊 Environment: ${process.env.NODE_ENV}`);
+			console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+		});
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     process.exit(1);

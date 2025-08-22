@@ -3,9 +3,8 @@ import multer from 'multer';
 import csv from 'csv-parser';
 import { z } from 'zod';
 import { createReadStream } from 'fs';
-import { prisma } from '../index';
+import { Staff, Payslip, UserRole } from '../models';
 import { authenticate, authorize, requireInstitution, AuthRequest } from '../middleware/auth';
-import { UserRole } from '@prisma/client';
 
 const router = express.Router();
 
@@ -60,41 +59,40 @@ router.get('/', authenticate, requireInstitution, async (req: AuthRequest, res) 
 
     const skip = (page - 1) * limit;
 
-    // Build where clause
-    const where: any = {
-      institutionId: req.user!.institutionId
+    // Build search query
+    const searchQuery: any = {
+      institution: req.user!.institution
     };
 
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { employeeId: { contains: search, mode: 'insensitive' } }
+      searchQuery.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { employeeId: { $regex: search, $options: 'i' } }
       ];
     }
 
     if (department) {
-      where.department = department;
+      searchQuery.department = department;
     }
 
     if (status) {
-      where.isActive = status === 'active';
+      searchQuery.isActive = status === 'active';
     }
 
     // Get staff with pagination
     const [staff, total] = await Promise.all([
-      prisma.staff.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' }
-      }),
-      prisma.staff.count({ where })
+      Staff.find(searchQuery)
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 })
+        .lean(),
+      Staff.countDocuments(searchQuery)
     ]);
 
     const totalPages = Math.ceil(total / limit);
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         staff,
@@ -110,7 +108,7 @@ router.get('/', authenticate, requireInstitution, async (req: AuthRequest, res) 
     });
   } catch (error) {
     console.error('Get staff error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Server error'
     });
@@ -125,11 +123,9 @@ router.post('/', authenticate, requireInstitution, async (req: AuthRequest, res)
     const staffData = createStaffSchema.parse(req.body);
 
     // Check if staff with same email exists in institution
-    const existingStaff = await prisma.staff.findFirst({
-      where: {
-        email: staffData.email,
-        institutionId: req.user!.institutionId
-      }
+    const existingStaff = await Staff.findOne({
+      email: staffData.email,
+      institution: req.user!.institution
     });
 
     if (existingStaff) {
@@ -139,15 +135,15 @@ router.post('/', authenticate, requireInstitution, async (req: AuthRequest, res)
       });
     }
 
-    const staff = await prisma.staff.create({
-      data: {
-        ...staffData,
-        institutionId: req.user!.institutionId,
-        joinedDate: staffData.joinedDate ? new Date(staffData.joinedDate) : undefined
-      }
+    const staff = new Staff({
+      ...staffData,
+      institution: req.user!.institution,
+      joinedDate: staffData.joinedDate ? new Date(staffData.joinedDate) : undefined
     });
 
-    res.status(201).json({
+    await staff.save();
+
+    return res.status(201).json({
       success: true,
       data: staff
     });
@@ -155,12 +151,12 @@ router.post('/', authenticate, requireInstitution, async (req: AuthRequest, res)
     if (error instanceof z.ZodError) {
       return res.status(400).json({
         success: false,
-        error: error.errors[0].message
+        error: error.errors[0]?.message || 'Validation error'
       });
     }
     
     console.error('Create staff error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Server error'
     });
@@ -174,18 +170,10 @@ router.get('/:id', authenticate, requireInstitution, async (req: AuthRequest, re
   try {
     const { id } = req.params;
 
-    const staff = await prisma.staff.findFirst({
-      where: {
-        id,
-        institutionId: req.user!.institutionId
-      },
-      include: {
-        payslips: {
-          orderBy: { createdAt: 'desc' },
-          take: 5
-        }
-      }
-    });
+    const staff = await Staff.findOne({
+      _id: id,
+      institution: req.user!.institution
+    }).lean();
 
     if (!staff) {
       return res.status(404).json({
@@ -194,13 +182,26 @@ router.get('/:id', authenticate, requireInstitution, async (req: AuthRequest, re
       });
     }
 
-    res.json({
+    // Get recent payslips
+    const payslips = await Payslip.find({
+      staff: id
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
+
+    const staffWithPayslips = {
+      ...staff,
+      payslips
+    };
+
+    return res.json({
       success: true,
-      data: staff
+      data: staffWithPayslips
     });
   } catch (error) {
     console.error('Get staff by ID error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Server error'
     });
@@ -216,11 +217,9 @@ router.put('/:id', authenticate, requireInstitution, async (req: AuthRequest, re
     const updateData = updateStaffSchema.parse(req.body);
 
     // Check if staff exists and belongs to institution
-    const existingStaff = await prisma.staff.findFirst({
-      where: {
-        id,
-        institutionId: req.user!.institutionId
-      }
+    const existingStaff = await Staff.findOne({
+      _id: id,
+      institution: req.user!.institution
     });
 
     if (!existingStaff) {
@@ -232,12 +231,10 @@ router.put('/:id', authenticate, requireInstitution, async (req: AuthRequest, re
 
     // Check if email is being changed and if it conflicts
     if (updateData.email && updateData.email !== existingStaff.email) {
-      const emailConflict = await prisma.staff.findFirst({
-        where: {
-          email: updateData.email,
-          institutionId: req.user!.institutionId,
-          id: { not: id }
-        }
+      const emailConflict = await Staff.findOne({
+        email: updateData.email,
+        institution: req.user!.institution,
+        _id: { $ne: id }
       });
 
       if (emailConflict) {
@@ -248,15 +245,16 @@ router.put('/:id', authenticate, requireInstitution, async (req: AuthRequest, re
       }
     }
 
-    const staff = await prisma.staff.update({
-      where: { id },
-      data: {
+    const staff = await Staff.findByIdAndUpdate(
+      id,
+      {
         ...updateData,
         joinedDate: updateData.joinedDate ? new Date(updateData.joinedDate) : undefined
-      }
-    });
+      },
+      { new: true, runValidators: true }
+    ).lean();
 
-    res.json({
+    return res.json({
       success: true,
       data: staff
     });
@@ -264,12 +262,12 @@ router.put('/:id', authenticate, requireInstitution, async (req: AuthRequest, re
     if (error instanceof z.ZodError) {
       return res.status(400).json({
         success: false,
-        error: error.errors[0].message
+        error: error.errors[0]?.message || 'Validation error'
       });
     }
     
     console.error('Update staff error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Server error'
     });
@@ -284,11 +282,9 @@ router.delete('/:id', authenticate, requireInstitution, async (req: AuthRequest,
     const { id } = req.params;
 
     // Check if staff exists and belongs to institution
-    const existingStaff = await prisma.staff.findFirst({
-      where: {
-        id,
-        institutionId: req.user!.institutionId
-      }
+    const existingStaff = await Staff.findOne({
+      _id: id,
+      institution: req.user!.institution
     });
 
     if (!existingStaff) {
@@ -299,18 +295,16 @@ router.delete('/:id', authenticate, requireInstitution, async (req: AuthRequest,
     }
 
     // Soft delete by setting isActive to false
-    await prisma.staff.update({
-      where: { id },
-      data: { isActive: false }
-    });
+    existingStaff.isActive = false;
+    await existingStaff.save();
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Staff member deactivated successfully'
     });
   } catch (error) {
     console.error('Delete staff error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Server error'
     });
@@ -354,11 +348,9 @@ router.post('/upload-csv', authenticate, requireInstitution, upload.single('file
         }
 
         // Check if staff already exists
-        const existingStaff = await prisma.staff.findFirst({
-          where: {
-            email: row.email,
-            institutionId: req.user!.institutionId
-          }
+        const existingStaff = await Staff.findOne({
+          email: row.email,
+          institution: req.user!.institution
         });
 
         if (existingStaff) {
@@ -368,19 +360,18 @@ router.post('/upload-csv', authenticate, requireInstitution, upload.single('file
         }
 
         // Create staff member
-        await prisma.staff.create({
-          data: {
-            name: row.name,
-            email: row.email,
-            employeeId: row.employeeId || null,
-            department: row.department || null,
-            position: row.position || null,
-            salary: row.salary ? parseFloat(row.salary) : null,
-            joinedDate: row.joinedDate ? new Date(row.joinedDate) : null,
-            institutionId: req.user!.institutionId
-          }
+        const staff = new Staff({
+          name: row.name,
+          email: row.email,
+          employeeId: row.employeeId || null,
+          department: row.department || null,
+          position: row.position || null,
+          salary: row.salary ? parseFloat(row.salary) : null,
+          joinedDate: row.joinedDate ? new Date(row.joinedDate) : null,
+          institution: req.user!.institution
         });
 
+        await staff.save();
         successCount++;
       } catch (error) {
         errors.push(`Row ${results.indexOf(row) + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -388,7 +379,7 @@ router.post('/upload-csv', authenticate, requireInstitution, upload.single('file
       }
     }
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         totalProcessed: results.length,
@@ -399,7 +390,7 @@ router.post('/upload-csv', authenticate, requireInstitution, upload.single('file
     });
   } catch (error) {
     console.error('Upload CSV error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Server error'
     });
@@ -411,29 +402,22 @@ router.post('/upload-csv', authenticate, requireInstitution, upload.single('file
 // @access  Private (Institution Admin)
 router.get('/departments', authenticate, requireInstitution, async (req: AuthRequest, res) => {
   try {
-    const departments = await prisma.staff.findMany({
-      where: {
-        institutionId: req.user!.institutionId,
-        department: { not: null }
-      },
-      select: {
-        department: true
-      },
-      distinct: ['department']
+    const departments = await Staff.distinct('department', {
+      institution: req.user!.institution,
+      department: { $ne: null }
     });
 
     const departmentList = departments
-      .map(d => d.department)
       .filter(Boolean)
       .sort();
 
-    res.json({
+    return res.json({
       success: true,
       data: departmentList
     });
   } catch (error) {
     console.error('Get departments error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: 'Server error'
     });

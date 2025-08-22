@@ -1,15 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { prisma } from '../index';
-import { UserRole } from '@prisma/client';
+import { User, UserRole } from "../models";
 
 export interface AuthRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    role: UserRole;
-    institutionId?: string;
-  };
+	user?: {
+		id: string;
+		email: string;
+		role: UserRole;
+		institution?: string;
+	};
 }
 
 export const authenticate = async (
@@ -37,26 +36,26 @@ export const authenticate = async (
     const decoded = jwt.verify(token, process.env.JWT_SECRET) as any;
 
     // Check if user still exists
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        institutionId: true,
-        isActive: true
-      }
-    });
+    const userDoc = await User.findById(decoded.id)
+		.select("_id email role institution isActive")
+		.lean();
 
-    if (!user || !user.isActive) {
-      res.status(401).json({
-        success: false,
-        error: 'User not found or inactive'
-      });
-      return;
-    }
+	if (!userDoc || !userDoc.isActive) {
+		res.status(401).json({
+			success: false,
+			error: "User not found or inactive",
+		});
+		return;
+	}
 
-    req.user = user;
+	// Map Mongoose document to expected user interface
+	req.user = {
+		id: userDoc._id.toString(),
+		email: userDoc.email,
+		role: userDoc.role,
+		institution: userDoc.institution?.toString(),
+	};
+    
     next();
   } catch (error) {
     if (error instanceof jwt.JsonWebTokenError) {
@@ -105,12 +104,12 @@ export const requireInstitution = (
   res: Response,
   next: NextFunction
 ): void => {
-  if (!req.user?.institutionId) {
-    res.status(403).json({
-      success: false,
-      error: 'Access denied. Institution access required.'
-    });
-    return;
+  if (!req.user?.institution) {
+		res.status(403).json({
+			success: false,
+			error: "Access denied. Institution access required.",
+		});
+		return;
   }
 
   next();

@@ -1,9 +1,12 @@
 import express from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { prisma } from '../index';
-import { authenticate, requireInstitution, AuthRequest } from '../middleware/auth';
-import { PayslipStatus } from '@prisma/client';
+import { Payslip, Staff, PayslipStatus } from "../models";
+import {
+	authenticate,
+	requireInstitution,
+	AuthRequest,
+} from "../middleware/auth";
 
 const router = express.Router();
 
@@ -48,145 +51,122 @@ const createPayslipSchema = z.object({
 // @access  Private
 router.get('/', authenticate, async (req: AuthRequest, res) => {
   try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const month = req.query.month as string;
-    const year = req.query.year as string;
-    const status = req.query.status as string;
+		const page = parseInt(req.query.page as string) || 1;
+		const limit = parseInt(req.query.limit as string) || 10;
+		const month = req.query.month as string;
+		const year = req.query.year as string;
+		const status = req.query.status as string;
 
-    const skip = (page - 1) * limit;
+		const skip = (page - 1) * limit;
 
-    // Build where clause
-    const where: any = {};
+		// Build search query
+		const searchQuery: any = {};
 
-    if (req.user!.role === 'STAFF') {
-      // Staff can only see their own payslips
-      where.userId = req.user!.id;
-    } else {
-      // Institution admin can see all payslips for their institution
-      where.institutionId = req.user!.institutionId;
-    }
+		if (req.user!.role === "STAFF") {
+			// Staff can only see their own payslips
+			searchQuery.user = req.user!.id;
+		} else {
+			// Institution admin can see all payslips for their institution
+			searchQuery.institution = req.user!.institution;
+		}
 
-    if (month) {
-      where.month = month;
-    }
+		if (month) {
+			searchQuery.month = month;
+		}
 
-    if (year) {
-      where.year = parseInt(year);
-    }
+		if (year) {
+			searchQuery.year = parseInt(year);
+		}
 
-    if (status) {
-      where.status = status;
-    }
+		if (status) {
+			searchQuery.status = status;
+		}
 
-    // Get payslips with pagination
-    const [payslips, total] = await Promise.all([
-      prisma.payslip.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          staff: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              department: true
-            }
-          }
-        }
-      }),
-      prisma.payslip.count({ where })
-    ]);
+		// Get payslips with pagination
+		const [payslips, total] = await Promise.all([
+			Payslip.find(searchQuery)
+				.skip(skip)
+				.limit(limit)
+				.sort({ createdAt: -1 })
+				.populate("staff", "id name email department")
+				.lean(),
+			Payslip.countDocuments(searchQuery),
+		]);
 
-    const totalPages = Math.ceil(total / limit);
+		const totalPages = Math.ceil(total / limit);
 
-    res.json({
-      success: true,
-      data: {
-        payslips,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages,
-          hasNext: page < totalPages,
-          hasPrev: page > 1
-        }
-      }
-    });
+		return res.json({
+			success: true,
+			data: {
+				payslips,
+				pagination: {
+					page,
+					limit,
+					total,
+					totalPages,
+					hasNext: page < totalPages,
+					hasPrev: page > 1,
+				},
+			},
+		});
   } catch (error) {
     console.error('Get payslips error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
+    return res.status(500).json({
+		success: false,
+		error: "Server error",
+	});
   }
 });
 
 // @route   POST /api/payslips
-// @desc    Create payslip manually
+// @desc    Create new payslip
 // @access  Private (Institution Admin)
 router.post('/', authenticate, requireInstitution, async (req: AuthRequest, res) => {
   try {
-    const payslipData = createPayslipSchema.parse(req.body);
+		const payslipData = createPayslipSchema.parse(req.body);
 
-    // Check if payslip already exists for the same staff and month/year
-    if (payslipData.staffId) {
-      const existingPayslip = await prisma.payslip.findFirst({
-        where: {
-          staffId: payslipData.staffId,
-          month: payslipData.month,
-          year: payslipData.year,
-          institutionId: req.user!.institutionId
-        }
-      });
+		// Check if payslip already exists for the same month, year, and staff
+		if (payslipData.staffId) {
+			const existingPayslip = await Payslip.findOne({
+				month: payslipData.month,
+				year: payslipData.year,
+				staff: payslipData.staffId,
+				institution: req.user!.institution,
+			});
 
-      if (existingPayslip) {
-        return res.status(400).json({
-          success: false,
-          error: 'Payslip already exists for this staff member and period'
-        });
-      }
-    }
+			if (existingPayslip) {
+				return res.status(400).json({
+					success: false,
+					error: "Payslip already exists for this staff member in the specified month and year",
+				});
+			}
+		}
 
-    const payslip = await prisma.payslip.create({
-      data: {
-        ...payslipData,
-        institutionId: req.user!.institutionId,
-        status: PayslipStatus.AVAILABLE,
-        processedAt: new Date()
-      },
-      include: {
-        staff: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            department: true
-          }
-        }
-      }
-    });
+		const payslip = new Payslip({
+			...payslipData,
+			staff: payslipData.staffId,
+			institution: req.user!.institution,
+		});
 
-    res.status(201).json({
-      success: true,
-      data: payslip
-    });
+		await payslip.save();
+
+		return res.status(201).json({
+			success: true,
+			data: payslip,
+		});
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({
-        success: false,
-        error: error.errors[0].message
-      });
+			success: false,
+			error: error.errors[0]?.message || "Validation error",
+		});
     }
     
     console.error('Create payslip error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
+    return res.status(500).json({
+		success: false,
+		error: "Server error",
+	});
   }
 });
 
@@ -197,115 +177,49 @@ router.get('/:id', authenticate, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
 
-    // Build where clause
-    const where: any = { id };
+    const payslip = await Payslip.findById(id)
+		.populate("staff", "id name email department")
+		.populate("user", "id name email")
+		.lean();
 
-    if (req.user!.role === 'STAFF') {
-      // Staff can only see their own payslips
-      where.userId = req.user!.id;
-    } else {
-      // Institution admin can see payslips for their institution
-      where.institutionId = req.user!.institutionId;
-    }
+	if (!payslip) {
+		return res.status(404).json({
+			success: false,
+			error: "Payslip not found",
+		});
+	}
 
-    const payslip = await prisma.payslip.findFirst({
-      where,
-      include: {
-        staff: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            department: true,
-            position: true
-          }
-        }
-      }
-    });
+	// Check access control
+	if (
+		req.user!.role === "STAFF" &&
+		payslip.user?.toString() !== req.user!.id
+	) {
+		return res.status(403).json({
+			success: false,
+			error: "Access denied",
+		});
+	}
 
-    if (!payslip) {
-      return res.status(404).json({
-        success: false,
-        error: 'Payslip not found'
-      });
-    }
+    if (
+		req.user!.role === "INSTITUTION_ADMIN" &&
+		payslip.institution?.toString() !== req.user!.institution?.toString()
+	) {
+		return res.status(403).json({
+			success: false,
+			error: "Access denied",
+		});
+	}
 
-    res.json({
-      success: true,
-      data: payslip
-    });
+    return res.json({
+		success: true,
+		data: payslip,
+	});
   } catch (error) {
-    console.error('Get payslip by ID error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
-  }
-});
-
-// @route   POST /api/payslips/upload-pdf
-// @desc    Upload bulk payslip PDF
-// @access  Private (Institution Admin)
-router.post('/upload-pdf', authenticate, requireInstitution, upload.single('file'), async (req: AuthRequest, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'No file uploaded'
-      });
-    }
-
-    // Create payslip record for the uploaded file
-    const payslip = await prisma.payslip.create({
-      data: {
-        month: req.body.month || 'Unknown',
-        year: parseInt(req.body.year) || new Date().getFullYear(),
-        grossPay: 0, // Will be updated after processing
-        netPay: 0, // Will be updated after processing
-        status: PayslipStatus.PROCESSING,
-        fileName: req.file.originalname,
-        filePath: req.file.path,
-        institutionId: req.user!.institutionId
-      }
-    });
-
-    // In a real application, you would process the PDF here
-    // For now, we'll simulate processing
-    setTimeout(async () => {
-      try {
-        await prisma.payslip.update({
-          where: { id: payslip.id },
-          data: {
-            status: PayslipStatus.AVAILABLE,
-            processedAt: new Date(),
-            grossPay: 450000, // Mock data
-            netPay: 380000 // Mock data
-          }
-        });
-      } catch (error) {
-        console.error('Error updating payslip after processing:', error);
-        await prisma.payslip.update({
-          where: { id: payslip.id },
-          data: {
-            status: PayslipStatus.FAILED
-          }
-        });
-      }
-    }, 5000); // Simulate 5-second processing time
-
-    res.json({
-      success: true,
-      data: {
-        payslipId: payslip.id,
-        message: 'PDF uploaded successfully. Processing in progress...'
-      }
-    });
-  } catch (error) {
-    console.error('Upload PDF error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
+    console.error("Get payslip error:", error);
+	return res.status(500).json({
+		success: false,
+		error: "Server error",
+	});
   }
 });
 
@@ -318,138 +232,231 @@ router.put('/:id', authenticate, requireInstitution, async (req: AuthRequest, re
     const updateData = createPayslipSchema.partial().parse(req.body);
 
     // Check if payslip exists and belongs to institution
-    const existingPayslip = await prisma.payslip.findFirst({
-      where: {
-        id,
-        institutionId: req.user!.institutionId
-      }
-    });
+    const existingPayslip = await Payslip.findOne({
+		_id: id,
+		institution: req.user!.institution,
+	});
 
-    if (!existingPayslip) {
-      return res.status(404).json({
-        success: false,
-        error: 'Payslip not found'
-      });
-    }
+	if (!existingPayslip) {
+		return res.status(404).json({
+			success: false,
+			error: "Payslip not found",
+		});
+	}
 
-    const payslip = await prisma.payslip.update({
-      where: { id },
-      data: updateData,
-      include: {
-        staff: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            department: true
-          }
-        }
-      }
-    });
+	// Check if update would create duplicate
+	if (updateData.month || updateData.year || updateData.staffId) {
+		const month = updateData.month || existingPayslip.month;
+		const year = updateData.year || existingPayslip.year;
+		const staff = updateData.staffId || existingPayslip.staff;
 
-    res.json({
-      success: true,
-      data: payslip
-    });
+		const duplicatePayslip = await Payslip.findOne({
+			month,
+			year,
+			staff,
+			institution: req.user!.institution,
+			_id: { $ne: id },
+		});
+
+		if (duplicatePayslip) {
+			return res.status(400).json({
+				success: false,
+				error: "Payslip already exists for this staff member in the specified month and year",
+			});
+		}
+	}
+
+    const payslip = await Payslip.findByIdAndUpdate(
+		id,
+		{
+			...updateData,
+			staff: updateData.staffId || existingPayslip.staff,
+		},
+		{ new: true, runValidators: true },
+	).lean();
+
+    return res.json({
+		success: true,
+		data: payslip,
+	});
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({
-        success: false,
-        error: error.errors[0].message
-      });
+			success: false,
+			error: error.errors[0]?.message || "Validation error",
+		});
     }
     
     console.error('Update payslip error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
+    return res.status(500).json({
+		success: false,
+		error: "Server error",
+	});
   }
 });
 
 // @route   DELETE /api/payslips/:id
 // @desc    Delete payslip
 // @access  Private (Institution Admin)
-router.delete('/:id', authenticate, requireInstitution, async (req: AuthRequest, res) => {
-  try {
-    const { id } = req.params;
+router.delete(
+	"/:id",
+	authenticate,
+	requireInstitution,
+	async (req: AuthRequest, res) => {
+		try {
+			const { id } = req.params;
 
-    // Check if payslip exists and belongs to institution
-    const existingPayslip = await prisma.payslip.findFirst({
-      where: {
-        id,
-        institutionId: req.user!.institutionId
-      }
-    });
+			// Check if payslip exists and belongs to institution
+			const payslip = await Payslip.findOne({
+				_id: id,
+				institution: req.user!.institution,
+			});
 
-    if (!existingPayslip) {
-      return res.status(404).json({
-        success: false,
-        error: 'Payslip not found'
-      });
-    }
+			if (!payslip) {
+				return res.status(404).json({
+					success: false,
+					error: "Payslip not found",
+				});
+			}
 
-    await prisma.payslip.delete({
-      where: { id }
-    });
+			await Payslip.findByIdAndDelete(id);
 
-    res.json({
-      success: true,
-      message: 'Payslip deleted successfully'
-    });
-  } catch (error) {
-    console.error('Delete payslip error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
-  }
-});
+			return res.json({
+				success: true,
+				message: "Payslip deleted successfully",
+			});
+		} catch (error) {
+			console.error("Delete payslip error:", error);
+			return res.status(500).json({
+				success: false,
+				error: "Server error",
+			});
+		}
+	},
+);
 
-// @route   GET /api/payslips/stats
-// @desc    Get payslip statistics
-// @access  Private
-router.get('/stats', authenticate, async (req: AuthRequest, res) => {
-  try {
-    const where: any = {};
+// @route   POST /api/payslips/:id/upload
+// @desc    Upload payslip PDF file
+// @access  Private (Institution Admin)
+router.post(
+	"/:id/upload",
+	authenticate,
+	requireInstitution,
+	upload.single("file"),
+	async (req: AuthRequest, res) => {
+		try {
+			const { id } = req.params;
 
-    if (req.user!.role === 'STAFF') {
-      where.userId = req.user!.id;
-    } else {
-      where.institutionId = req.user!.institutionId;
-    }
+			if (!req.file) {
+				return res.status(400).json({
+					success: false,
+					error: "No file uploaded",
+				});
+			}
 
-    const [totalPayslips, availablePayslips, processingPayslips, totalGrossPay, totalNetPay] = await Promise.all([
-      prisma.payslip.count({ where }),
-      prisma.payslip.count({ where: { ...where, status: PayslipStatus.AVAILABLE } }),
-      prisma.payslip.count({ where: { ...where, status: PayslipStatus.PROCESSING } }),
-      prisma.payslip.aggregate({
-        where: { ...where, status: PayslipStatus.AVAILABLE },
-        _sum: { grossPay: true }
-      }),
-      prisma.payslip.aggregate({
-        where: { ...where, status: PayslipStatus.AVAILABLE },
-        _sum: { netPay: true }
-      })
-    ]);
+			// Check if payslip exists and belongs to institution
+			const payslip = await Payslip.findOne({
+				_id: id,
+				institution: req.user!.institution,
+			});
 
-    res.json({
-      success: true,
-      data: {
-        totalPayslips,
-        availablePayslips,
-        processingPayslips,
-        totalGrossPay: totalGrossPay._sum.grossPay || 0,
-        totalNetPay: totalNetPay._sum.netPay || 0
-      }
-    });
-  } catch (error) {
-    console.error('Get payslip stats error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Server error'
-    });
-  }
-});
+			if (!payslip) {
+				return res.status(404).json({
+					success: false,
+					error: "Payslip not found",
+				});
+			}
+
+			// Update payslip with file information
+			payslip.filePath = req.file.path;
+			payslip.fileName = req.file.originalname;
+			payslip.status = PayslipStatus.AVAILABLE;
+			payslip.processedAt = new Date();
+
+			await payslip.save();
+
+			return res.json({
+				success: true,
+				data: payslip,
+			});
+		} catch (error) {
+			console.error("Upload payslip error:", error);
+			return res.status(500).json({
+				success: false,
+				error: "Server error",
+			});
+		}
+	},
+);
+
+// @route   GET /api/payslips/staff/:staffId
+// @desc    Get payslips for specific staff member
+// @access  Private (Institution Admin)
+router.get(
+	"/staff/:staffId",
+	authenticate,
+	requireInstitution,
+	async (req: AuthRequest, res) => {
+		try {
+			const { staffId } = req.params;
+			const page = parseInt(req.query.page as string) || 1;
+			const limit = parseInt(req.query.limit as string) || 10;
+
+			const skip = (page - 1) * limit;
+
+			// Check if staff belongs to institution
+			const staff = await Staff.findOne({
+				_id: staffId,
+				institution: req.user!.institution,
+			});
+
+			if (!staff) {
+				return res.status(404).json({
+					success: false,
+					error: "Staff member not found",
+				});
+			}
+
+			// Get payslips for staff member
+			const [payslips, total] = await Promise.all([
+				Payslip.find({
+					staff: staffId,
+					institution: req.user!.institution,
+				})
+					.skip(skip)
+					.limit(limit)
+					.sort({ createdAt: -1 })
+					.lean(),
+				Payslip.countDocuments({
+					staff: staffId,
+					institution: req.user!.institution,
+				}),
+			]);
+
+			const totalPages = Math.ceil(total / limit);
+
+			return res.json({
+				success: true,
+				data: {
+					payslips,
+					pagination: {
+						page,
+						limit,
+						total,
+						totalPages,
+						hasNext: page < totalPages,
+						hasPrev: page > 1,
+					},
+				},
+			});
+		} catch (error) {
+			console.error("Get staff payslips error:", error);
+			return res.status(500).json({
+				success: false,
+				error: "Server error",
+			});
+		}
+	},
+);
 
 export default router; 
