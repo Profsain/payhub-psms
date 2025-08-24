@@ -33,60 +33,65 @@ const AppRoutes = () => {
   
   if (user) {
     // Redirect authenticated users to their appropriate dashboard
-    if (user.role === 'staff') {
-      return <Navigate to="/staff-dashboard" replace />;
-    } else if (user.role === 'institution_admin') {
-      return <Navigate to="/admin-dashboard" replace />;
-    } else if (user.role === 'super_admin') {
-      return <Navigate to="/super-admin-dashboard" replace />;
-    }
+    if (user.role === "STAFF") {
+		return <Navigate to="/staff-dashboard" replace />;
+	} else if (user.role === "INSTITUTION_ADMIN") {
+		return <Navigate to="/admin-dashboard" replace />;
+	} else if (user.role === "SUPER_ADMIN") {
+		return <Navigate to="/super-admin-dashboard" replace />;
+	}
   }
   
   return <Index />;
 };
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <AuthProvider>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<AppRoutes />} />
-            <Route path="/auth" element={<Auth />} />
-            <Route path="/schedule-demo" element={<ScheduleDemo />} />
-            <Route 
-              path="/staff-dashboard" 
-              element={
-                <ProtectedRoute allowedRoles={['staff']}>
-                  <StaffDashboard />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/admin-dashboard" 
-              element={
-                <ProtectedRoute allowedRoles={['institution_admin']}>
-                  <InstitutionAdminDashboard />
-                </ProtectedRoute>
-              } 
-            />
-            <Route 
-              path="/super-admin-dashboard" 
-              element={
-                <ProtectedRoute allowedRoles={['super_admin']}>
-                  <SuperAdminDashboard />
-                </ProtectedRoute>
-              } 
-            />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
-      </TooltipProvider>
-    </AuthProvider>
-  </QueryClientProvider>
+	<QueryClientProvider client={queryClient}>
+		<AuthProvider>
+			<TooltipProvider>
+				<Toaster />
+				<Sonner />
+				<BrowserRouter>
+					<Routes>
+						<Route path="/" element={<AppRoutes />} />
+						<Route path="/auth" element={<Auth />} />
+						<Route
+							path="/schedule-demo"
+							element={<ScheduleDemo />}
+						/>
+						<Route
+							path="/staff-dashboard"
+							element={
+								<ProtectedRoute allowedRoles={["STAFF"]}>
+									<StaffDashboard />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="/admin-dashboard"
+							element={
+								<ProtectedRoute
+									allowedRoles={["INSTITUTION_ADMIN"]}
+								>
+									<InstitutionAdminDashboard />
+								</ProtectedRoute>
+							}
+						/>
+						<Route
+							path="/super-admin-dashboard"
+							element={
+								<ProtectedRoute allowedRoles={["SUPER_ADMIN"]}>
+									<SuperAdminDashboard />
+								</ProtectedRoute>
+							}
+						/>
+						{/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+						<Route path="*" element={<NotFound />} />
+					</Routes>
+				</BrowserRouter>
+			</TooltipProvider>
+		</AuthProvider>
+	</QueryClientProvider>
 );
 
 export default App;

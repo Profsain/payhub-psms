@@ -1,0 +1,27 @@
+{
+  "name": "payhub-fullstack",
+  "version": "1.0.0",
+  "description": "PayHub Fullstack Application - Payroll Management System",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:frontend\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:frontend": "cd pay-flow-automation && npm run dev",
+    "build": "npm run build:server && npm run build:frontend",
+    "build:server": "cd server && npm run build",
+    "build:frontend": "cd pay-flow-automation && npm run build",
+    "install:all": "npm install && cd server && npm install && cd ../pay-flow-automation && npm install",
+    "start": "cd server && npm start"
+  },
+  "keywords": [
+    "payroll",
+    "management",
+    "institution",
+    "payslip",
+    "fullstack"
+  ],
+  "author": "PayHub Team",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+} 

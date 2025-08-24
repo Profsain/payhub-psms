@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CORS Test - PayHub</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .test-section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        .success { color: green; }
+        .error { color: red; }
+        .info { color: blue; }
+        button { padding: 10px 20px; margin: 5px; border: none; border-radius: 4px; background: #007bff; color: white; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        pre { background: #f8f9fa; padding: 15px; border-radius: 4px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🧪 PayHub CORS Test</h1>
+    
+    <div class="test-section">
+        <h3>Server Status Check</h3>
+        <button onclick="testServerHealth()">Test Server Health</button>
+        <div id="health-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h3>CORS Test - OPTIONS Request</h3>
+        <button onclick="testCORS()">Test CORS (OPTIONS)</button>
+        <div id="cors-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h3>API Test - POST Request</h3>
+        <button onclick="testAPI()">Test API (POST)</button>
+        <div id="api-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h3>Instructions</h3>
+        <p class="info">1. Make sure the server is running on port 5000</p>
+        <p class="info">2. Make sure MongoDB is running on port 27017</p>
+        <p class="info">3. Click the test buttons above to verify CORS is working</p>
+        <p class="info">4. Check the browser console for detailed error messages</p>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:5000/api';
+        
+        async function testServerHealth() {
+            const resultDiv = document.getElementById('health-result');
+            resultDiv.innerHTML = '<p class="info">Testing server health...</p>';
+            
+            try {
+                const response = await fetch('http://localhost:5000/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.innerHTML = `<p class="success">✅ Server is running!</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+                } else {
+                    resultDiv.innerHTML = `<p class="error">❌ Server responded with status: ${response.status}</p>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">❌ Server connection failed: ${error.message}</p>`;
+            }
+        }
+
+        async function testCORS() {
+            const resultDiv = document.getElementById('cors-result');
+            resultDiv.innerHTML = '<p class="info">Testing CORS (OPTIONS)...</p>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/auth/super-admin`, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Origin': 'http://localhost:8080',
+                        'Access-Control-Request-Method': 'POST',
+                        'Access-Control-Request-Headers': 'Content-Type, Authorization'
+                    }
+                });
+                
+                resultDiv.innerHTML = `<p class="success">✅ CORS OPTIONS request successful!</p>
+                    <p>Status: ${response.status}</p>
+                    <p>Access-Control-Allow-Origin: ${response.headers.get('Access-Control-Allow-Origin')}</p>
+                    <p>Access-Control-Allow-Methods: ${response.headers.get('Access-Control-Allow-Methods')}</p>`;
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">❌ CORS test failed: ${error.message}</p>`;
+            }
+        }
+
+        async function testAPI() {
+            const resultDiv = document.getElementById('api-result');
+            resultDiv.innerHTML = '<p class="info">Testing API (POST)...</p>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/auth/super-admin`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Origin': 'http://localhost:8080'
+                    },
+                    body: JSON.stringify({
+                        email: 'test@example.com',
+                        password: 'testpassword123',
+                        name: 'Test User'
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.innerHTML = `<p class="success">✅ API POST request successful!</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+                } else {
+                    const errorData = await response.json();
+                    resultDiv.innerHTML = `<p class="error">❌ API request failed with status: ${response.status}</p><pre>${JSON.stringify(errorData, null, 2)}</pre>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">❌ API test failed: ${error.message}</p>`;
+            }
+        }
+
+        // Auto-test server health on page load
+        window.addEventListener('load', testServerHealth);
+    </script>
+</body>
+</html> 

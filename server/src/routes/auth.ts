@@ -23,12 +23,15 @@ const signupSchema = z
 			.string()
 			.min(10, "Phone number must be at least 10 characters"),
 		password: z.string().min(8, "Password must be at least 8 characters"),
-		confirmPassword: z.string(),
+		confirmPassword: z.string().optional(),
 	})
-	.refine((data) => data.password === data.confirmPassword, {
-		message: "Passwords don't match",
-		path: ["confirmPassword"],
-	});
+	.refine(
+		(data) => {
+			// Only validate if confirmPassword was provided.
+			return data.confirmPassword ? data.password === data.confirmPassword : true;
+		},
+		{ message: "Passwords don't match", path: ["confirmPassword"] },
+	);
 
 const changePasswordSchema = z
 	.object({
@@ -156,6 +159,7 @@ router.post("/signup", async (req, res) => {
 			role: UserRole.INSTITUTION_ADMIN,
 			phoneNumber,
 			institution: institution._id,
+			isActive: true,
 		});
 
 		await user.save();
@@ -307,6 +311,80 @@ router.post("/logout", authenticate, (req: AuthRequest, res) => {
 		success: true,
 		message: "Logged out successfully",
 	});
+});
+
+// @route   POST /api/auth/super-admin
+// @desc    Create super admin (first time setup)
+// @access  Public (only for initial setup)
+router.post("/super-admin", async (req, res) => {
+	try {
+		const { email, password, name } = z.object({
+			email: z.string().email("Invalid email address"),
+			password: z.string().min(8, "Password must be at least 8 characters"),
+			name: z.string().min(2, "Name must be at least 2 characters"),
+		}).parse(req.body);
+
+		// Check if any super admin already exists
+		const existingSuperAdmin = await User.findOne({ role: UserRole.SUPER_ADMIN });
+		if (existingSuperAdmin) {
+			return res.status(403).json({
+				success: false,
+				error: "Super admin already exists. Cannot create another one.",
+			});
+		}
+
+		// Check if user already exists
+		const existingUser = await User.findOne({ email });
+		if (existingUser) {
+			return res.status(400).json({
+				success: false,
+				error: "User with this email already exists",
+			});
+		}
+
+		// Hash password
+		const salt = await bcrypt.genSalt(12);
+		const hashedPassword = await bcrypt.hash(password, salt);
+
+		// Create super admin user
+		const superAdmin = new User({
+			email,
+			password: hashedPassword,
+			name,
+			role: UserRole.SUPER_ADMIN,
+			isActive: true,
+		});
+
+		await superAdmin.save();
+
+		// Generate token
+		const token = generateToken(superAdmin.id);
+
+		// Remove password from response
+		const userWithoutPassword = superAdmin.toObject();
+		delete (userWithoutPassword as any).password;
+
+		return res.status(201).json({
+			success: true,
+			data: {
+				user: userWithoutPassword,
+				token,
+			},
+		});
+	} catch (error) {
+		console.error('Super admin creation error:', error);
+		if (error instanceof z.ZodError) {
+			return res.status(400).json({
+				success: false,
+				error: error.errors[0]?.message || "Validation error",
+			});
+		}
+
+		return res.status(500).json({
+			success: false,
+			error: "Server error",
+		});
+	}
 });
 
 export default router; 
