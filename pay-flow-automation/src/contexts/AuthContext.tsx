@@ -21,7 +21,7 @@ export interface User {
 
 interface AuthContextType {
 	user: User | null;
-	login: (email: string, password: string) => Promise<boolean>;
+	login: (email: string, password: string) => Promise<User | null>;
 	signup: (
 		email: string,
 		password: string,
@@ -75,22 +75,23 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
 		checkAuth();
 	}, []);
 
-	const login = async (email: string, password: string): Promise<boolean> => {
+	const login = async (email: string, password: string): Promise<User | null> => {
 		setIsLoading(true);
 		try {
 			const response = await apiService.login(email, password);
-			console.log("Response", response)
 
 			if (response.success && response.data) {
 				const { user: userData, token } = response.data;
+				console.log("User data", userData);
 				localStorage.setItem("authToken", token);
 				setUser(userData);
-				return true;
+
+				return userData;
 			}
-			return false;
+			return null;
 		} catch (error) {
 			console.error("Login error:", error);
-			return false;
+			return null;
 		} finally {
 			setIsLoading(false);
 		}

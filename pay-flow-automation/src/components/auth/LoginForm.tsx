@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { UserRole } from '@/contexts/AuthContext';
 import { Loader2, Eye, EyeOff } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -23,27 +24,34 @@ export const LoginForm: React.FC<LoginFormProps> = ({
 	const navigate = useNavigate();
 
 	// Redirect to appropriate dashboard when user logs in
-	useEffect(() => {
+	const handleOpenDashboard = () => {
 		if (user) {
-			navigate("/");
+			console.log("User role:", user.role);
+			switch (user.role) {
+				case "STAFF":
+					navigate("/staff-dashboard");
+					break;
+				case "INSTITUTION_ADMIN":
+					navigate("/admin-dashboard");
+					break;
+				case "SUPER_ADMIN":
+					navigate("/super-admin-dashboard");
+					break;
+			}
 		}
-	}, [user, navigate]);
+	}
 
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
 
-		const success = await login(email, password);
-		console.log("Login success:", success);
-		console.log("User:", user);
-		console.log("Email:", email);
-		console.log("Password:", password)
+		const loggedInUser = await login(email, password);
 		
-
-		if (success) {
+		if (loggedInUser) {
 			toast({
 				title: "Login successful",
 				description: "Welcome back!",
 			});
+			handleOpenDashboard();
 		} else {
 			toast({
 				title: "Login failed",
@@ -52,6 +60,10 @@ export const LoginForm: React.FC<LoginFormProps> = ({
 			});
 		}
 	};
+
+	useEffect(() => {
+		handleOpenDashboard();
+	}, [handleSubmit]);
 
 	return (
 		<Card className="w-full max-w-md mx-auto">
